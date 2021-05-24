@@ -1,6 +1,5 @@
-int offset_minutes, waiting_minutes, working_minutes;
-int freq_hours, freq_minutes, duration_minutes;
-int seconds_passed, minutes_passed;
+unsigned int offset_minutes, waiting_minutes, working_minutes;
+unsigned int seconds_passed, minutes_passed;
 
 int current_state;
 #define IDLE_STATE 0
@@ -10,6 +9,8 @@ int current_state;
 
 #define RED_PIN PD7
 #define GREEN_PIN PD6
+
+#define TIME_MULTIPLIER 5
 
 void switch_to_idle()
 {
@@ -21,10 +22,6 @@ void switch_to_idle()
 
 void switch_to_offset_waiting()
 {
-  if (!offset_minutes) {
-    switch_to_waiting();
-    return;
-  }
   minutes_passed = 0;
   PORTD |= (1 << RED_PIN);
   PORTD |= (1 << GREEN_PIN);
@@ -33,7 +30,6 @@ void switch_to_offset_waiting()
 
 void switch_to_waiting()
 {
-  minutes_passed = 0;
   PORTD |= (1 << RED_PIN);
   PORTD &= ~(1 << GREEN_PIN);
   current_state = WAITING;
@@ -49,7 +45,7 @@ void switch_to_working()
 
 ISR(TIMER1_COMPA_vect) {
   // blink led
-  seconds_passed = (seconds_passed+1) % 5;
+  seconds_passed = (seconds_passed+1) % TIME_MULTIPLIER;
   Serial.println(seconds_passed);
   Serial.flush();
 
@@ -84,41 +80,21 @@ ISR(TIMER1_COMPA_vect) {
   }
 }
 
-// Receive info as HH-MM-MMM
-void receive_schedule()
-{
-  if (Serial.available()) {
-    char buf[10];
-    Serial.readString().toCharArray(buf, 10);
-    delay(1000);
-    freq_hours = (buf[0]-'0')*10+buf[1]-'0';
-    freq_minutes = (buf[3]-'0')*10+buf[4]-'0';
-    duration_minutes = (buf[6]-'0')*100+(buf[7]-'0')*10+buf[8]-'0';
-
-    Serial.println(freq_hours);
-    Serial.flush();
-    Serial.println(freq_minutes);
-    Serial.flush();
-    Serial.println(duration_minutes);
-    Serial.flush();
-    Serial.println("Schedule set.");
-    Serial.flush();
-  }
-}
-
 void start_timer1()
 {
+  seconds_passed = 0;
+  if (offset_minutes)
+    switch_to_offset_waiting();
+  else
+    switch_to_waiting();
+    
   TCCR1A = 0;
   TCCR1B = 0;
   TCNT1  = 0;
 
   OCR1A = 15624;                          // compare match register 16MHz/1024/1Hz-1
-  TCCR1B = (1 << WGM12);                  // CTC mode
-  TCCR1B |= (1 << CS12) | (1 << CS10);    // 1024 prescaler
   TIMSK1 |= (1 << OCIE1A);                // enable timer compare interrupt
-
-  seconds_passed = 0;
-  switch_to_offset_waiting();
+  TCCR1B = (1 << WGM12) | (1 << CS12) | (1 << CS10); // CTC, 1024 prescaler
 }
 
 void stop_timer1()
@@ -126,6 +102,93 @@ void stop_timer1()
   TCCR1B = 0;
   switch_to_idle();
 }
+
+bool is_number(char c)
+{
+  return c >= '0' && c <= '9';
+}
+
+// Receive info as HHH-HHH:MMM-MMM
+void receive_schedule()
+{
+  if (Serial.available()) {
+    String s;
+    s = Serial.readString();
+    delay(1000);
+    if (s.length() > 16) {
+      Serial.println("Mesaj prea lung!");
+      Serial.flush();
+      return;
+    }
+    s.toLowerCase();
+    if (s.startsWith("stop")) {
+      stop_timer1();
+      Serial.println("Programare oprita.");
+      Serial.flush();
+      return;
+    }
+
+    if (s.startsWith("info")) {
+      Serial.println("Scrieti o comanda de tipul [HH]H-[HH]H:[MM]M-[MM]M pentru a seta intarzierea pentru pornire, timpul de asteptare si cel de irigare.");
+      Serial.flush();
+      return;
+    }
+    
+      
+    int i = 0, last_i = 0;
+    unsigned int data[4] = {0};
+
+    for (int idx = 0; idx < 4; idx++) {
+      while (i < s.length() && is_number(s.c_str()[i])) {
+        data[idx] = data[idx]*10 + s.c_str()[i]-'0';
+        i++;
+      }
+      if (i - last_i > 3) {
+        Serial.println("Prea multe cifre pentru date!");
+        Serial.flush();
+        return;
+      }
+
+      if (i == last_i) {
+        Serial.println("Prea putine cifre pentru date!");
+        Serial.flush();
+        return;
+      }
+      
+      i++;
+      last_i = i;
+    }
+
+    if (data[1] + data[2] == 0 || data[3] == 0) {
+      Serial.println("Perioada de asteptare/lucru nu poate fi 0!");
+      Serial.flush();
+      return;
+    }
+
+    if (data[1] * TIME_MULTIPLIER + data[2] <= data[3]) {
+      Serial.println("Perioada de asteptare trebuie sa fie strict mai mare decat cea de lucru!");
+      Serial.flush();
+      return;
+    }
+    
+    stop_timer1();
+    offset_minutes = data[0] * TIME_MULTIPLIER;
+    waiting_minutes = data[1] * TIME_MULTIPLIER + data[2];
+    working_minutes = data[3];
+    
+    Serial.println(String("offset=") + offset_minutes);
+    Serial.flush();
+    Serial.println(String("wait=") + waiting_minutes);
+    Serial.flush();
+    Serial.println(String("work=") + working_minutes);
+    Serial.flush();
+    Serial.println("Programare reusita.");
+    Serial.flush();
+
+    start_timer1();
+  }
+}
+
 
 void setup()
 {
@@ -137,11 +200,9 @@ void setup()
 
   switch_to_idle();
   offset_minutes = 0;
-  waiting_minutes = 2;
-  working_minutes = 2;
+  waiting_minutes = 0;
+  working_minutes = 0;
   
-  start_timer1();
-   
   sei();
 }
 
@@ -149,6 +210,6 @@ void setup()
 void loop()
 {
   
-  //receive_schedule();
+  receive_schedule();
   
 }
