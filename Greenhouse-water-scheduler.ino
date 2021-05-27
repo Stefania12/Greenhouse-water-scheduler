@@ -6,9 +6,12 @@ int current_state;
 #define OFFSET_WAITING 1
 #define WAITING 2
 #define WORKING 3
+#define WORKING_ONCE 4
 
 #define RED_PIN PD7
 #define GREEN_PIN PD6
+
+#define WORK_ONCE_MINUTES 2
 
 #define TIME_MULTIPLIER 5
 
@@ -43,6 +46,14 @@ void switch_to_working()
   current_state = WORKING;
 }
 
+void switch_to_working_once()
+{
+  minutes_passed = 0;
+  PORTD |= (1 << GREEN_PIN);
+  PORTD &= ~(1 << RED_PIN);
+  current_state = WORKING_ONCE;
+}
+
 ISR(TIMER1_COMPA_vect) {
   // blink led
   seconds_passed = (seconds_passed+1) % TIME_MULTIPLIER;
@@ -55,8 +66,8 @@ ISR(TIMER1_COMPA_vect) {
     {
       case OFFSET_WAITING:
             if (minutes_passed == offset_minutes) {
-              switch_to_waiting();
-              Serial.println("switch to wait");
+              switch_to_working();
+              Serial.println("switch to work");
               Serial.flush();
             }
             break;
@@ -76,18 +87,29 @@ ISR(TIMER1_COMPA_vect) {
               Serial.flush();
             }
             break;
+      case WORKING_ONCE:
+            if (minutes_passed == WORK_ONCE_MINUTES) {
+              stop_timer1();
+              Serial.println("stop timer1");
+              Serial.flush();
+            }
+            break;
     }
   }
 }
 
-void start_timer1()
+void start_timer1(int once)
 {
   seconds_passed = 0;
-  if (offset_minutes)
+  minutes_passed = 0;
+
+  if (once)
+    switch_to_working_once();
+  else if (offset_minutes)
     switch_to_offset_waiting();
   else
     switch_to_waiting();
-    
+
   TCCR1A = 0;
   TCCR1B = 0;
   TCNT1  = 0;
@@ -185,10 +207,34 @@ void receive_schedule()
     Serial.println("Programare reusita.");
     Serial.flush();
 
-    start_timer1();
+    start_timer1(0);
   }
 }
 
+void setup_button_interrupts()
+{
+  EICRA = (1 << ISC11) | (1 << ISC10);  // INT1 on rising edge
+  EICRA |= (1 << ISC01) | (1 << ISC00); // INT1 on rising edge
+  EIMSK = (1 << INT0) | (1 << INT1);    // Activate interrupts
+}
+
+ISR(INT0_vect)
+{
+  Serial.println("Stop");
+  Serial.flush();
+  stop_timer1();
+}
+
+ISR(INT1_vect)
+{
+  Serial.println("Start");
+  Serial.flush();
+
+  offset_minutes = 0;
+  waiting_minutes = 0;
+  working_minutes = 0;
+  start_timer1(1);
+}
 
 void setup()
 {
@@ -202,6 +248,8 @@ void setup()
   offset_minutes = 0;
   waiting_minutes = 0;
   working_minutes = 0;
+
+  setup_button_interrupts();
   
   sei();
 }
