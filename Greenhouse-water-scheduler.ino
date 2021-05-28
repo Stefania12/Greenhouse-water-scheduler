@@ -11,6 +11,9 @@ int current_state;
 #define RED_PIN PD7
 #define GREEN_PIN PD6
 
+#define START_PIN PB0
+#define STOP_PIN PB1
+
 #define WORK_ONCE_MINUTES 2
 
 #define TIME_MULTIPLIER 5
@@ -43,6 +46,7 @@ void switch_to_working()
   minutes_passed = 0;
   PORTD |= (1 << GREEN_PIN);
   PORTD &= ~(1 << RED_PIN);
+  PORTB |= (1 << START_PIN);
   current_state = WORKING;
 }
 
@@ -51,14 +55,16 @@ void switch_to_working_once()
   minutes_passed = 0;
   PORTD |= (1 << GREEN_PIN);
   PORTD &= ~(1 << RED_PIN);
+  PORTB |= (1 << START_PIN);
   current_state = WORKING_ONCE;
 }
 
-ISR(TIMER1_COMPA_vect) {
-  // blink led
+ISR(TIMER1_COMPA_vect)
+{
   seconds_passed = (seconds_passed+1) % TIME_MULTIPLIER;
   Serial.println(seconds_passed);
   Serial.flush();
+  PORTB &= ~(1 << START_PIN);
 
   if (!seconds_passed) {
     minutes_passed++;
@@ -83,6 +89,7 @@ ISR(TIMER1_COMPA_vect) {
       case WORKING:
             if (minutes_passed == working_minutes) {
               switch_to_waiting();
+              PORTB |= (1 << STOP_PIN);
               Serial.println("switch to wait");
               Serial.flush();
             }
@@ -122,6 +129,7 @@ void start_timer1(int once)
 void stop_timer1()
 {
   TCCR1B = 0;
+  PORTB |= (1 << STOP_PIN);
   switch_to_idle();
 }
 
@@ -242,6 +250,7 @@ void setup()
   Serial.begin(9600);
   Serial.println("in function setup");
   DDRD = (1 << RED_PIN) | (1 << GREEN_PIN);
+  DDRB = (1 << START_PIN) | (1 << STOP_PIN);
   PORTD = 0;
 
   switch_to_idle();
@@ -257,7 +266,8 @@ void setup()
 
 void loop()
 {
-  
+  delay(500);
+  PORTB &= ~(1 << START_PIN);
+  PORTB &= ~(1 << STOP_PIN);
   receive_schedule();
-  
 }
