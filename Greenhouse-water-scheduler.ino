@@ -6,7 +6,6 @@ int current_state;
 #define OFFSET_WAITING 1
 #define WAITING 2
 #define WORKING 3
-#define WORKING_ONCE 4
 
 #define RED_PIN PD7
 #define GREEN_PIN PD6
@@ -50,15 +49,6 @@ void switch_to_working()
   current_state = WORKING;
 }
 
-void switch_to_working_once()
-{
-  minutes_passed = 0;
-  PORTD |= (1 << GREEN_PIN);
-  PORTD &= ~(1 << RED_PIN);
-  PORTB |= (1 << START_PIN);
-  current_state = WORKING_ONCE;
-}
-
 ISR(TIMER1_COMPA_vect)
 {
   seconds_passed = (seconds_passed+1) % TIME_MULTIPLIER;
@@ -88,17 +78,16 @@ ISR(TIMER1_COMPA_vect)
 
       case WORKING:
             if (minutes_passed == working_minutes) {
-              switch_to_waiting();
-              PORTB |= (1 << STOP_PIN);
-              Serial.println("switch to wait");
-              Serial.flush();
-            }
-            break;
-      case WORKING_ONCE:
-            if (minutes_passed == WORK_ONCE_MINUTES) {
-              stop_timer1();
-              Serial.println("stop timer1");
-              Serial.flush();
+              if (waiting_minutes == 0) {
+                stop_timer1();
+                Serial.println("stop timer1");
+                Serial.flush();
+              } else {
+                switch_to_waiting();
+                PORTB |= (1 << STOP_PIN);
+                Serial.println("switch to wait");
+                Serial.flush();
+              }
             }
             break;
     }
@@ -110,12 +99,10 @@ void start_timer1(int once)
   seconds_passed = 0;
   minutes_passed = 0;
 
-  if (once)
-    switch_to_working_once();
-  else if (offset_minutes)
+  if (offset_minutes > 0)
     switch_to_offset_waiting();
   else
-    switch_to_waiting();
+    switch_to_working();
 
   TCCR1A = 0;
   TCCR1B = 0;
@@ -159,14 +146,13 @@ void receive_schedule()
     }
 
     if (s.startsWith("info")) {
-      Serial.println("Scrieti o comanda de tipul [HH]H-[HH]H:[MM]M-[MM]M pentru a seta intarzierea pentru pornire, timpul de asteptare si cel de irigare.");
+      Serial.println("Scrieti o comanda de tipul [HH]H-[HH]H:[MM]M-[MM]M pentru a seta: intarziere_pornire-timp_asteptare-timp_irigare.");
       Serial.flush();
       return;
     }
-    
-      
+
     int i = 0, last_i = 0;
-    unsigned int data[4] = {0};
+    unsigned int data[4] = {0}, offset, wait, work;
 
     for (int idx = 0; idx < 4; idx++) {
       while (i < s.length() && is_number(s.c_str()[i])) {
@@ -189,22 +175,26 @@ void receive_schedule()
       last_i = i;
     }
 
-    if (data[1] + data[2] == 0 || data[3] == 0) {
-      Serial.println("Perioada de asteptare/lucru nu poate fi 0!");
+    offset = data[0] * TIME_MULTIPLIER;
+    wait = data[1] * TIME_MULTIPLIER + data[2];
+    work = data[3];
+
+    if (work == 0) {
+      Serial.println("Perioada de lucru nu poate fi 0!");
       Serial.flush();
       return;
     }
 
-    if (data[1] * TIME_MULTIPLIER + data[2] <= data[3]) {
+    if (wait > 0 && wait <= work) {
       Serial.println("Perioada de asteptare trebuie sa fie strict mai mare decat cea de lucru!");
       Serial.flush();
       return;
     }
     
     stop_timer1();
-    offset_minutes = data[0] * TIME_MULTIPLIER;
-    waiting_minutes = data[1] * TIME_MULTIPLIER + data[2];
-    working_minutes = data[3];
+    offset_minutes = offset;
+    waiting_minutes = wait;
+    working_minutes = work;
     
     Serial.println(String("offset=") + offset_minutes);
     Serial.flush();
@@ -240,7 +230,7 @@ ISR(INT1_vect)
 
   offset_minutes = 0;
   waiting_minutes = 0;
-  working_minutes = 0;
+  working_minutes = WORK_ONCE_MINUTES;
   start_timer1(1);
 }
 
