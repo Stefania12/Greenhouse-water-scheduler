@@ -1,5 +1,6 @@
 unsigned int offset_minutes, waiting_minutes, working_minutes;
 unsigned int seconds_passed, minutes_passed;
+unsigned long stop_impulse;
 
 int current_state;
 #define IDLE_STATE 0
@@ -45,48 +46,36 @@ void switch_to_working()
   minutes_passed = 0;
   PORTD |= (1 << GREEN_PIN);
   PORTD &= ~(1 << RED_PIN);
-  PORTB |= (1 << START_PIN);
+  PORTB = (1 << START_PIN);
   current_state = WORKING;
 }
 
 ISR(TIMER1_COMPA_vect)
 {
   seconds_passed = (seconds_passed+1) % TIME_MULTIPLIER;
-  Serial.println(seconds_passed);
-  Serial.flush();
-  PORTB &= ~(1 << START_PIN);
+  PORTB = 0;
 
   if (!seconds_passed) {
     minutes_passed++;
     switch (current_state)
     {
       case OFFSET_WAITING:
-            if (minutes_passed == offset_minutes) {
+            if (minutes_passed == offset_minutes)
               switch_to_working();
-              Serial.println("switch to work");
-              Serial.flush();
-            }
             break;
 
       case WAITING:
-            if (minutes_passed == waiting_minutes) {
+            if (minutes_passed == waiting_minutes)
               switch_to_working();
-              Serial.println("switch to work");
-              Serial.flush();
-            }
             break;
 
       case WORKING:
             if (minutes_passed == working_minutes) {
               if (waiting_minutes == 0) {
                 stop_timer1();
-                Serial.println("stop timer1");
-                Serial.flush();
               } else {
                 switch_to_waiting();
-                PORTB |= (1 << STOP_PIN);
-                Serial.println("switch to wait");
-                Serial.flush();
+                PORTB = (1 << STOP_PIN);
               }
             }
             break;
@@ -94,7 +83,7 @@ ISR(TIMER1_COMPA_vect)
   }
 }
 
-void start_timer1(int once)
+void start_timer1()
 {
   seconds_passed = 0;
   minutes_passed = 0;
@@ -108,24 +97,25 @@ void start_timer1(int once)
   TCCR1B = 0;
   TCNT1  = 0;
 
-  OCR1A = 15624;                          // compare match register 16MHz/1024/1Hz-1
-  TIMSK1 |= (1 << OCIE1A);                // enable timer compare interrupt
-  TCCR1B = (1 << WGM12) | (1 << CS12) | (1 << CS10); // CTC, 1024 prescaler
+  OCR1A = 15624;  // compare match register 16MHz/1024/1Hz-1
+  TIMSK1 |= (1 << OCIE1A);  // enable timer compare interrupt
+  TCCR1B = (1 << WGM12) | (1 << CS12) | (1 << CS10);  // CTC, 1024 prescaler
 }
 
 void stop_timer1()
 {
   TCCR1B = 0;
+  PORTB &= ~(1 << START_PIN);
   PORTB |= (1 << STOP_PIN);
   switch_to_idle();
+  stop_impulse = millis();
 }
 
-bool is_number(char c)
+bool is_digit(char c)
 {
   return c >= '0' && c <= '9';
 }
 
-// Receive info as HHH-HHH:MMM-MMM
 void receive_schedule()
 {
   if (Serial.available()) {
@@ -145,7 +135,7 @@ void receive_schedule()
       return;
     }
 
-    if (s.startsWith("info")) {
+    if (s.startsWith("ajutor")) {
       Serial.println("Scrieti o comanda de tipul [HH]H-[HH]H:[MM]M-[MM]M pentru a seta: intarziere_pornire-timp_asteptare-timp_irigare.");
       Serial.flush();
       return;
@@ -155,7 +145,7 @@ void receive_schedule()
     unsigned int data[4] = {0}, offset, wait, work;
 
     for (int idx = 0; idx < 4; idx++) {
-      while (i < s.length() && is_number(s.c_str()[i])) {
+      while (i < s.length() && is_digit(s.c_str()[i])) {
         data[idx] = data[idx]*10 + s.c_str()[i]-'0';
         i++;
       }
@@ -196,49 +186,38 @@ void receive_schedule()
     waiting_minutes = wait;
     working_minutes = work;
     
-    Serial.println(String("offset=") + offset_minutes);
-    Serial.flush();
-    Serial.println(String("wait=") + waiting_minutes);
-    Serial.flush();
-    Serial.println(String("work=") + working_minutes);
-    Serial.flush();
     Serial.println("Programare reusita.");
     Serial.flush();
 
-    start_timer1(0);
+    start_timer1();
   }
 }
 
 void setup_button_interrupts()
 {
   EICRA = (1 << ISC11) | (1 << ISC10);  // INT1 on rising edge
-  EICRA |= (1 << ISC01) | (1 << ISC00); // INT1 on rising edge
+  EICRA |= (1 << ISC01) | (1 << ISC00); // INT0 on rising edge
   EIMSK = (1 << INT0) | (1 << INT1);    // Activate interrupts
 }
 
 ISR(INT0_vect)
 {
-  Serial.println("Stop");
-  Serial.flush();
   stop_timer1();
 }
 
 ISR(INT1_vect)
 {
-  Serial.println("Start");
-  Serial.flush();
-
+  PORTB = 0;
   offset_minutes = 0;
   waiting_minutes = 0;
   working_minutes = WORK_ONCE_MINUTES;
-  start_timer1(1);
+  start_timer1();
 }
 
 void setup()
 {
   cli();
   Serial.begin(9600);
-  Serial.println("in function setup");
   DDRD = (1 << RED_PIN) | (1 << GREEN_PIN);
   DDRB = (1 << START_PIN) | (1 << STOP_PIN);
   PORTD = 0;
@@ -253,11 +232,12 @@ void setup()
   sei();
 }
 
-
 void loop()
 {
-  delay(500);
-  PORTB &= ~(1 << START_PIN);
-  PORTB &= ~(1 << STOP_PIN);
+  if (stop_impulse && abs(millis() - stop_impulse) >= 1000) {
+    PORTB = 0;
+    stop_impulse = 0;
+  }
+
   receive_schedule();
 }
