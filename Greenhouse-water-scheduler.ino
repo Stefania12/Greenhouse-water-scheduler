@@ -14,9 +14,9 @@ int current_state;
 #define START_PIN PB0
 #define STOP_PIN PB1
 
-#define WORK_ONCE_MINUTES 2
+#define WORK_ONCE_MINUTES 30
 
-#define TIME_MULTIPLIER 5
+#define TIME_MULTIPLIER 60
 
 void switch_to_idle()
 {
